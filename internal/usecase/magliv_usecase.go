@@ -1,32 +1,45 @@
 package usecase
 
 import (
+	"fmt"
 	"hash/fnv"
+	"sort"
 	"sync"
 
 	"github.com/mikiasgoitom/magliv/internal/domain"
 )
 
-// LoadBalancer orchestrates the Maglev logic. It holds the state of the
-// lookup table and provides thread-safe methods to interact with it.
+// LoadBalancer orchestrates the Maglev logic.
 type LoadBalancer struct {
-    mu          sync.RWMutex
-    lookupTable []string
-    backends    map[string]*domain.Backend
+    mu             sync.RWMutex
+    lookupTable    []string
+    allBackends    map[string]*domain.Backend // Master list of all possible backends
+    activeBackends []*domain.Backend          // Currently active backends
 }
 
-// NewLoadBalancer creates and initializes a new LoadBalancer instance.
-func NewLoadBalancer(backends []*domain.Backend) *LoadBalancer {
+// NewLoadBalancer creates a new load balancer instance.
+// It takes a list of all possible backends and a list of which ones should be initially active.
+func NewLoadBalancer(allBackends []*domain.Backend, initialActiveIDs []string) *LoadBalancer {
     lb := &LoadBalancer{
-        backends: make(map[string]*domain.Backend),
+        allBackends:    make(map[string]*domain.Backend),
+        activeBackends: make([]*domain.Backend, 0),
     }
-    // Perform the initial population of the lookup table.
-    lb.UpdateBackends(backends)
+
+    for _, b := range allBackends {
+        lb.allBackends[b.ID] = b
+    }
+
+    for _, id := range initialActiveIDs {
+        if backend, ok := lb.allBackends[id]; ok {
+            lb.activeBackends = append(lb.activeBackends, backend)
+        }
+    }
+
+    lb.updateLookupTable()
     return lb
 }
 
-// GetBackend selects a backend for a given key using the Maglev lookup table.
-// It returns the chosen backend or nil if no backends are available.
+// GetBackend selects a backend for a given key.
 func (lb *LoadBalancer) GetBackend(key string) *domain.Backend {
     lb.mu.RLock()
     defer lb.mu.RUnlock()
@@ -35,32 +48,77 @@ func (lb *LoadBalancer) GetBackend(key string) *domain.Backend {
         return nil
     }
 
-    // Hash the key to find the position in the lookup table.
     hash := hash(key)
     index := hash % uint64(len(lb.lookupTable))
 
     backendID := lb.lookupTable[index]
-    return lb.backends[backendID]
+    return lb.allBackends[backendID]
 }
 
-// UpdateBackends recalculates the lookup table with a new set of backends.
-// This is used for the initial setup and for dynamically adding/removing backends.
-func (lb *LoadBalancer) UpdateBackends(backends []*domain.Backend) {
+// updateLookupTable is an internal method to rebuild the lookup table.
+func (lb *LoadBalancer) updateLookupTable() {
+    lb.lookupTable = domain.PopulateLookupTable(lb.activeBackends)
+    sort.Slice(lb.activeBackends, func(i, j int) bool {
+        return lb.activeBackends[i].ID < lb.activeBackends[j].ID
+    })
+}
+
+// DeactivateBackend removes a backend from the active pool.
+func (lb *LoadBalancer) DeactivateBackend(id string) error {
     lb.mu.Lock()
     defer lb.mu.Unlock()
 
-    // Regenerate the lookup table using our core domain logic.
-    lb.lookupTable = domain.PopulateLookupTable(backends)
-
-    // Update the internal map for quick access to backend details by ID.
-    newBackendsMap := make(map[string]*domain.Backend, len(backends))
-    for _, b := range backends {
-        newBackendsMap[b.ID] = b
+    var found bool
+    newActiveBackends := make([]*domain.Backend, 0)
+    for _, b := range lb.activeBackends {
+        if b.ID == id {
+            found = true
+            continue
+        }
+        newActiveBackends = append(newActiveBackends, b)
     }
-    lb.backends = newBackendsMap
+
+    if !found {
+        return fmt.Errorf("backend %s not found or already inactive", id)
+    }
+
+    lb.activeBackends = newActiveBackends
+    lb.updateLookupTable()
+    return nil
 }
 
-// hash generates a uint64 hash for a given string using FNV-1a.
+// ActivateBackend adds a backend to the active pool.
+func (lb *LoadBalancer) ActivateBackend(id string) error {
+    lb.mu.Lock()
+    defer lb.mu.Unlock()
+
+    for _, b := range lb.activeBackends {
+        if b.ID == id {
+            return fmt.Errorf("backend %s is already active", id)
+        }
+    }
+
+    backendToAdd, exists := lb.allBackends[id]
+    if !exists {
+        return fmt.Errorf("backend %s does not exist in the master list", id)
+    }
+
+    lb.activeBackends = append(lb.activeBackends, backendToAdd)
+    lb.updateLookupTable()
+    return nil
+}
+
+// GetActiveBackendIDs returns the IDs of the currently active backends.
+func (lb *LoadBalancer) GetActiveBackendIDs() []string {
+    lb.mu.RLock()
+    defer lb.mu.RUnlock()
+    ids := make([]string, len(lb.activeBackends))
+    for i, b := range lb.activeBackends {
+        ids[i] = b.ID
+    }
+    return ids
+}
+
 func hash(s string) uint64 {
     h := fnv.New64a()
     h.Write([]byte(s))

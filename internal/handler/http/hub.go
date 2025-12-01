@@ -41,6 +41,27 @@ func NewHub(backendIDs []string) *Hub { // Modify the constructor
 	}
 }
 
+// UpdateBackendIDs updates the list of backends and sends a new init message to all clients
+// to reset their state.
+func (h *Hub) UpdateBackendIDs(backendIDs []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.backendIDs = backendIDs
+
+	initMsg := map[string]interface{}{
+		"type":     "init",
+		"backends": backendIDs,
+	}
+	jsonMsg, _ := json.Marshal(initMsg)
+
+	// We broadcast this so all open dashboards reset to the new state.
+	for conn := range h.clients {
+		conn.WriteMessage(websocket.TextMessage, jsonMsg)
+	}
+	log.Println("[WS] Broadcasted new backend list to all clients.")
+}
+
 // Run starts the hub's event loop. It should be run in a separate goroutine.
 func (h *Hub) Run() {
 	for {
