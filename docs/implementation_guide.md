@@ -1,104 +1,66 @@
 # Magliv Implementation Guide
 
-This document describes the architectural approach and implementation plan for the Magliv demo, following the principles of Clean Architecture.
+This document describes the final architecture and implementation of the Magliv demo, following the principles of Clean Architecture.
 
-## 1. System Architecture: Clean Architecture
+## 1. System Architecture
 
-We will structure the application into distinct layers to ensure separation of concerns. The dependency rule is paramount: **inner layers must not know anything about outer layers**.
+The application is structured into distinct layers to ensure a clear separation of concerns. The core principle is that inner layers are independent of outer layers.
 
-- **`Domain` (Innermost)**: Contains the core business logic and entities. This is the heart of Maglev—the hashing algorithm and data structures. It has no dependencies on other layers.
-- **`Usecase`**: Orchestrates the flow of data. It uses the `Domain` to perform its tasks. It knows about the `Domain`, but not about the delivery mechanism (like HTTP).
-- **`Handler` (Outermost)**: The delivery mechanism. In our case, this is the HTTP reverse proxy that handles incoming requests. It depends on the `Usecase` layer to do the actual work.
-- **`main`**: The composition root. It initializes and wires all the layers together.
+*   **`Domain`**: Contains the core business logic—the Maglev hashing algorithm and the `Backend` entity. It has no external dependencies.
+*   **`Usecase`**: Orchestrates the domain logic. It contains the `LoadBalancer` which manages the state of active and inactive backends.
+*   **`Handler`**: The outermost layer, responsible for communication. This includes the `MaglevHandler` (reverse proxy), `AdminHandler` (backend activation/deactivation), and the `Hub` (WebSocket communication).
+*   **`main`**: The composition root that initializes and wires all the layers together.
 
 ```
-+-----------------------------------------------------------------+
-|  main (Composition Root)                                        |
-|                                                                 |
-|  +-----------------------+      +---------------------------+   |
-|  | Handler (HTTP)        |----->| Usecase (LoadBalancer)    |   |
-|  | - Reverse Proxy       |      | - GetBackend()            |   |
-|  | - Request Keying      |      | - Add/Remove Backend()    |   |
-|  +-----------------------+      +---------------------------+   |
-|                                             |                   |
-|                                             v                   |
-|                                 +---------------------------+   |
-|                                 | Domain (Maglev Core)      |   |
-|                                 | - Backend Entity          |   |
-|                                 | - Hashing & Table Gen     |   |
-|                                 +---------------------------+   |
-|                                                                 |
-+-----------------------------------------------------------------+
++-------------------------------------------------------------------------+
+|  main (Composition Root)                                                |
+|                                                                         |
+|  +-----------------+   +------------------+   +-----------------------+ |
+|  | AdminHandler    |   | MaglevHandler    |   | Hub (WebSocket)       | |
+|  | - /admin/act... |   | - / (Proxy)      |   | - /ws                 | |
+|  +-----------------+   +------------------+   +-----------------------+ |
+|          |                   |                        |                 |
+|          +-------------------+------------------------+                 |
+|                              |                                          |
+|                              v                                          |
+|                  +---------------------------+                          |
+|                  | Usecase (LoadBalancer)    |                          |
+|                  | - Activate/Deactivate     |                          |
+|                  | - GetBackend()            |                          |
+|                  +---------------------------+                          |
+|                              |                                          |
+|                              v                                          |
+|                  +---------------------------+                          |
+|                  | Domain (Maglev Core)      |                          |
+|                  | - Hashing & Table Gen     |                          |
+|                  +---------------------------+                          |
+|                                                                         |
++-------------------------------------------------------------------------+
 ```
 
-## 2. Phase 1: Core Load Balancer with Terminal Logging
+## 2. Component Breakdown
 
-This phase focuses on getting the fundamental Maglev logic working and demonstrating it via clear terminal output.
+### Core Logic
 
-### Component Implementation
+*   **`internal/domain/magliv_ds.go`**: Defines the `Backend` entity and contains the `PopulateLookupTable` function, which is the pure implementation of the Maglev hashing algorithm.
+*   **`internal/usecase/magliv_usecase.go`**: Defines the `LoadBalancer`, which holds the master list of all 10 backends and a list of currently active ones. It contains the logic to `ActivateBackend`, `DeactivateBackend`, and `GetBackend` for a given request key.
 
-- **`internal/domain/magliv.go`**:
+### Handlers
 
-  - `Backend`: A struct holding a backend's `ID` and `Address`.
-  - `GeneratePermutation(...)`: The function to generate a backend's preference list.
-  - `PopulateLookupTable(...)`: The core function to build the Maglev lookup table.
+*   **`internal/handler/http/magliv_handler.go`**: The main reverse proxy. For every incoming request, it calls the `LoadBalancer` use case to select an active backend, forwards the request, and sends an "update" message to the `Hub`.
+*   **`internal/handler/http/admin_handler.go`**: Exposes the `/admin/activate` and `/admin/deactivate` endpoints. It calls the corresponding methods on the `LoadBalancer` use case and instructs the `Hub` to notify dashboards of the state change.
+*   **`internal/handler/http/hub.go`**: Manages all WebSocket connections. It registers new clients, unregisters them on disconnect, and broadcasts messages. When a client connects or the backend state changes, it sends an `init` message to reset the dashboards.
 
-- **`internal/usecase/magliv_usecase.go`**:
+### Frontend
 
-  - `LoadBalancer`: A struct holding the backend list and the lookup table.
-  - `NewLoadBalancer(backends)`: Constructor that generates the initial lookup table.
-  - `GetBackend(key string)`: Hashes the key and uses the lookup table to select a backend.
-  - `UpdateBackends(backends)`: Regenerates the lookup table when backends change.
+*   **`frontend/index.html`**: The live dashboard. It uses Chart.js to render a bar chart and connects to the `/ws` endpoint. It listens for `init` messages to set up the chart and `update` messages to increment the request counts for each backend.
+*   **`frontend/admin.html`**: The admin control panel. It provides a UI with `+` and `-` buttons to hit the `/admin/activate` and `/admin/deactivate` endpoints, allowing for live demonstration of Maglev's resilience.
 
-- **`internal/handler/http/magliv_handler.go`**:
+### Entrypoint
 
-  - `MaglevHandler`: A struct holding a reference to the `usecase.LoadBalancer`.
-  - `ServeHTTP(w, r)`:
-    1.  Gets a key from the request (e.g., `r.RemoteAddr`).
-    2.  Calls the use case to get the chosen backend.
-    3.  **Logs the decision to the terminal**: `log.Printf("Request from %s routed to %s", key, backendID)`.
-    4.  Uses `httputil.NewSingleHostReverseProxy` to forward the request.
-
-- **`cmd/server/main.go`**:
-  1.  Define backend server addresses.
-  2.  Start simple HTTP servers for each backend in separate goroutines.
-  3.  Initialize the `LoadBalancer` use case.
-  4.  Initialize the `MaglevHandler`.
-  5.  Start the main load balancer server, routing all `/` traffic to the `MaglevHandler`.
-
-## 3. Phase 2: Adding Live Graphing
-
-This phase adds the visual component on top of the working core from Phase 1.
-
-### New Components & Modifications
-
-- **`internal/usecase/hub.go` (New)**:
-
-  - `Hub`: A struct to manage WebSocket clients (register, unregister, broadcast).
-  - `NewHub()`: Creates and runs the hub in a goroutine.
-
-- **`internal/handler/http/websocket_handler.go` (New)**:
-
-  - A new handler to upgrade HTTP connections to WebSockets and register them with the hub.
-
-- **`frontend/` (New Directory)**:
-  - `index.html`: Contains the `<canvas>` for the chart and includes Chart.js and `app.js`.
-  - `app.js`: Contains the JavaScript to connect to the WebSocket, listen for messages, and update the Chart.js graph.
-
-### Modifications to Existing Files
-
-- **`internal/usecase/magliv_usecase.go`**:
-
-  - The `LoadBalancer` struct will be modified to hold a reference to the `Hub`.
-  - The `NewLoadBalancer` constructor will accept the `Hub` as a parameter.
-
-- **`internal/handler/http/magliv_handler.go`**:
-
-  - The `ServeHTTP` method will be modified to call `hub.Broadcast` with the routing decision, in addition to logging it.
-
-- **`cmd/server/main.go`**:
-  - Will be updated to:
-    1.  Initialize the `Hub` in a goroutine.
-    2.  Pass the `Hub` to the `LoadBalancer` use case.
-    3.  Add a new route `/ws` for the `websocket_handler`.
-    4.  Add a new route `/graph` to serve the `frontend/index.html` file.
+*   **`cmd/server/main.go`**:
+    1.  Initializes and starts all 10 backend HTTP servers in the background.
+    2.  Initializes the `LoadBalancer` use case, telling it which backends are initially active.
+    3.  Initializes the `Hub`, `MaglevHandler`, and `AdminHandler`.
+    4.  Sets up all the routes (`/`, `/dashboard`, `/admin`, `/ws`, etc.).
+    5.  Starts the main HTTP server.
