@@ -23,11 +23,11 @@ func PopulateLookupTable(backends []*Backend) []string {
         return nil
     }
 
-    // Step 1: Generate the permutation table for all backends.
+    // Generate the permutation table for all backends.
     // This table holds the preferred lookup table slots for each backend.
     permutation := generatePermutationTable(backends)
 
-    // Step 2: Populate the lookup table.
+    // Populate the lookup table.
     lookup := make([]int, M)
     for i := range lookup {
         lookup[i] = -1 // Initialize with -1 to mark as empty.
@@ -56,7 +56,7 @@ func PopulateLookupTable(backends []*Backend) []string {
         }
     }
 
-    // Step 3: Convert the lookup table of indices into a table of backend IDs.
+    // Convert the lookup table of indices into a table of backend IDs.
     result := make([]string, M)
     for i, backendIndex := range lookup {
         if backendIndex != -1 {

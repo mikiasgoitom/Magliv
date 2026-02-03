@@ -9,13 +9,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// We need to install the gorilla/websocket package.
-// Run: go get github.com/gorilla/websocket
-
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// In a production environment, you should check the origin.
+	// In a production environment, one should check the origin.
 	// For this demo, we can allow any origin.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -72,7 +69,7 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 			log.Println("[WS] Client registered")
 
-			// --- FIX: Send init message to the newly registered client ---
+			// Send init message to the newly registered client ---
 			initMsg := map[string]any{
 				"type":     "init",
 				"backends": h.backendIDs,

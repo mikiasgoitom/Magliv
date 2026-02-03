@@ -15,7 +15,7 @@ const loadBalancerAddr = "localhost:8080"
 func main() {
     log.Printf("Starting Magliv Demo...")
 
-    // --- Step 1: Start all 10 backend servers ---
+    //  Start all 10 backend servers 
     allBackends := make([]*domain.Backend, 0, 10)
     for i := 0; i < 10; i++ {
         id := fmt.Sprintf("Backend-%d", i+1)
@@ -24,7 +24,7 @@ func main() {
         go startBackendServer(addr, id)
     }
 
-    // --- Step 2: Initialize Usecase, Hub, and Handlers ---
+    //  Initialize Usecase, Hub, and Handlers 
     // Start with the first 3 backends active.
     initialActiveIDs := []string{"Backend-1", "Backend-2", "Backend-3"}
     loadBalancer := usecase.NewLoadBalancer(allBackends, initialActiveIDs)
@@ -35,7 +35,7 @@ func main() {
     maglevHandler := maglivhttp.NewMaglevHandler(loadBalancer, hub)
     adminHandler := maglivhttp.NewAdminHandler(loadBalancer, hub)
 
-    // --- Step 3: Setup server routes ---
+    //  Setup server routes 
     mux := http.NewServeMux()
     mux.Handle("/", maglevHandler)
     mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +48,7 @@ func main() {
     mux.HandleFunc("/admin/activate", adminHandler.Activate)
     mux.HandleFunc("/admin/deactivate", adminHandler.Deactivate)
 
-    // --- Step 4: Start the server ---
+    //  Start the server 
     server := &http.Server{Addr: loadBalancerAddr, Handler: mux}
     log.Printf("Load Balancer is listening on http://%s", loadBalancerAddr)
     log.Printf("Dashboard available at http://%s/dashboard", loadBalancerAddr)
